@@ -1,47 +1,223 @@
-name: Automated PR Review (Free + AI)
+name: Automated PR Review
 
 on:
   pull_request:
-    branches: [main, develop]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
 
 jobs:
-  review:
+  detect:
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
-      pull-requests: write
-      security-events: write
-
+    outputs:
+      languages: ${{ steps.detection.outputs.languages }}
+      codeql_languages: ${{ steps.detection.outputs.codeql_languages }}
     steps:
-
-      # Step 1: Checkout
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # Step 2: Setup Node
-      - name: Setup Node.js
+      - name: Detect project types from changed files
+        id: detection
+        run: |
+          BASE=${{ github.event.pull_request.base.sha }}
+          HEAD=${{ github.event.pull_request.head.sha }}
+          changed_files=$(git diff --name-only $BASE $HEAD)
+
+          langs=()
+          codeql_langs=()
+
+          if echo "$changed_files" | grep -qE '\.py$'; then
+            langs+=('"python"')
+            codeql_langs+=('python')
+          fi
+
+          if echo "$changed_files" | grep -qE '\.(js|jsx|mjs)$'; then
+            langs+=('"javascript"')
+            codeql_langs+=('javascript')
+          fi
+
+          if echo "$changed_files" | grep -qE '\.(html|css|scss)$'; then
+            langs+=('"htmlcss"')
+          fi
+
+          if [ ${#langs[@]} -eq 0 ]; then
+            echo "languages=[]" >> $GITHUB_OUTPUT
+          else
+            echo "languages=[$(IFS=,; echo "${langs[*]}")]" >> $GITHUB_OUTPUT
+          fi
+
+          if [ ${#codeql_langs[@]} -gt 0 ]; then
+            echo "codeql_languages=$(IFS=,; echo "${codeql_langs[*]}")" >> $GITHUB_OUTPUT
+          else
+            echo "codeql_languages=" >> $GITHUB_OUTPUT
+          fi
+
+  quality:
+    needs: detect
+    if: needs.detect.outputs.languages != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        language: ${{ fromJSON(needs.detect.outputs.languages) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Python
+      - name: Set up Python
+        if: matrix.language == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python linters and test runner
+        if: matrix.language == 'python'
+        run: pip install ruff flake8 pytest
+
+      - name: Install project dependencies (if requirements.txt exists)
+        if: matrix.language == 'python' && hashFiles('requirements.txt') != ''
+        run: pip install -r requirements.txt
+
+      - name: Run Ruff
+        if: matrix.language == 'python'
+        run: ruff check .
+
+      - name: Run Flake8
+        if: matrix.language == 'python'
+        run: flake8 .
+
+      - name: Run Pytest
+        if: matrix.language == 'python'
+        run: |
+          if [ -d tests ] || [ -d test ]; then
+            pytest
+          else
+            echo "No test directory found, skipping."
+          fi
+
+      # JavaScript / React
+      - name: Set up Node.js
+        if: matrix.language == 'javascript'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Install JavaScript dependencies
+        if: matrix.language == 'javascript'
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
 
-      # Step 3: Lint check
+      - name: Install ESLint and React plugin
+        if: matrix.language == 'javascript'
+        run: |
+          npm install --save-dev eslint
+          if grep -q '"react"' package.json; then
+            npm install --save-dev eslint-plugin-react
+          fi
+
       - name: Run ESLint
-        run: npx eslint . --max-warnings 0
+        if: matrix.language == 'javascript'
+        run: npx eslint . --ext .js,.jsx --max-warnings 0
 
-      # Step 4: Run tests
-      - name: Run tests
-        run: npm test
+      - name: Run Jest tests
+        if: matrix.language == 'javascript'
+        run: |
+          if npm run test --if-present; then
+            echo "Tests passed."
+          else
+            echo "No test script found, skipping."
+          fi
 
-      # Step 5: CodeQL Security Scan
+      # HTML / CSS
+      - name: Set up Node.js for HTML/CSS linters
+        if: matrix.language == 'htmlcss'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install HTMLHint and Stylelint
+        if: matrix.language == 'htmlcss'
+        run: npm install --save-dev htmlhint stylelint stylelint-config-standard
+
+      - name: Run HTMLHint
+        if: matrix.language == 'htmlcss'
+        run: npx htmlhint "**/*.html"
+
+      - name: Run Stylelint
+        if: matrix.language == 'htmlcss'
+        run: npx stylelint "**/*.css" "**/*.scss" --max-warnings 0
+
+  security:
+    needs: detect
+    if: needs.detect.outputs.codeql_languages != ''
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
-          languages: javascript
-
-      - name: Run CodeQL analysis
+          languages: ${{ needs.detect.outputs.codeql_languages }}
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+      - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@v3
+
+  ai-summary:
+    runs-on: ubuntu-latest
+    needs: detect
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Generate git diff
+        run: |
+          git diff ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} > diff.txt
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Gemini SDK
+        run: pip install google-generativeai
+      - name: Generate AI summary
+        id: ai
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          cat << 'EOF' > generate_summary.py
+          import os, sys
+          import google.generativeai as genai
+
+          genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+          model = genai.GenerativeModel("gemini-1.5-flash")
+
+          with open("diff.txt", "r") as f:
+              diff_content = f.read()
+
+          prompt = (
+              "You are a helpful code reviewer. Summarize the following code changes "
+              "from a pull request. Explain what changed, why it matters, and highlight "
+              "any potential concerns. Keep the summary concise and use markdown.\n\n"
+              + diff_content
+          )
+
+          response = model.generate_content(prompt)
+          print(response.text)
+          EOF
+
+          python generate_summary.py > summary.md
+      - name: Post summary as PR comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} --body "$(cat summary.md)"

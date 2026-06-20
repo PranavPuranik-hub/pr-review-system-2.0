@@ -1,19 +1,12 @@
 {
-  "name": "pr-review-system",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "jest"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
-  "devDependencies": {
-    "@eslint/js": "^10.0.1",
-    "eslint": "^10.2.0",
-    "globals": "^17.5.0",
-    "jest": "^30.3.0"
+    "name": "pr-review-demo",
+    "version": "1.0.0",
+    "scripts": {
+      "test": "jest"
+    },
+    "devDependencies": {
+      "eslint": "^8.0.0",
+      "eslint-plugin-react": "^7.0.0",
+      "jest": "^29.0.0"
+    }
   }
-}
