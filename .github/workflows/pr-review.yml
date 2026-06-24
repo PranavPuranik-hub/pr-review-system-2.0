@@ -180,26 +180,29 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - name: Generate git diff
         run: |
           git diff ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} > diff.txt
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install Gemini SDK
-        run: pip install google-generativeai
+
+      - name: Install new Gemini SDK
+        run: pip install google-genai
+
       - name: Generate AI summary
         id: ai
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           cat << 'EOF' > generate_summary.py
-          import os, sys
-          import google.generativeai as genai
+          import os
+          from google import genai
 
-          genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-          model = genai.GenerativeModel("gemini-1.5-flash")
+          client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
           with open("diff.txt", "r") as f:
               diff_content = f.read()
@@ -211,11 +214,15 @@ jobs:
               + diff_content
           )
 
-          response = model.generate_content(prompt)
+          response = client.models.generate_content(
+              model="gemini-1.5-flash",
+              contents=prompt
+          )
           print(response.text)
           EOF
 
           python generate_summary.py > summary.md
+
       - name: Post summary as PR comment
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
