@@ -172,7 +172,7 @@ jobs:
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@v3
 
-    ai-summary:
+  ai-summary:
     runs-on: ubuntu-latest
     needs: detect
     if: always()
