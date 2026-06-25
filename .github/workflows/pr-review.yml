@@ -172,7 +172,7 @@ jobs:
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@v3
 
-  ai-summary:
+    ai-summary:
     runs-on: ubuntu-latest
     needs: detect
     if: always()
@@ -185,46 +185,24 @@ jobs:
         run: |
           git diff ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} > diff.txt
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install new Gemini SDK
-        run: pip install google-genai
-
-      - name: Generate AI summary
+      - name: Generate AI summary using REST API
         id: ai
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          cat << 'EOF' > generate_summary.py
-          import os
-          from google import genai
+          # Read the diff and escape it for JSON
+          DIFF=$(cat diff.txt | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
 
-          client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+          # Call Gemini REST endpoint
+          RESPONSE=$(curl -s "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$GEMINI_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"contents\":[{\"parts\":[{\"text\": \"You are a helpful code reviewer. Summarize the following code changes from a pull request. Explain what changed, why it matters, and highlight any potential concerns. Keep the summary concise and use markdown.\n\n${DIFF}\"}]}]}")
 
-          with open("diff.txt", "r") as f:
-              diff_content = f.read()
-
-          prompt = (
-              "You are a helpful code reviewer. Summarize the following code changes "
-              "from a pull request. Explain what changed, why it matters, and highlight "
-              "any potential concerns. Keep the summary concise and use markdown.\n\n"
-              + diff_content
-          )
-
-          response = client.models.generate_content(
-              model="gemini-1.5-flash",
-              contents=prompt
-          )
-          print(response.text)
-          EOF
-
-          python generate_summary.py > summary.md
+          # Extract the text from the response
+          echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['candidates'][0]['content']['parts'][0]['text'])" > summary.md
 
       - name: Post summary as PR comment
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh pr comment ${{ github.event.pull_request.number }} --body "$(cat summary.md)"
+          gh pr comment ${{ github.event.pull_request.number }} --body-file summary.md
