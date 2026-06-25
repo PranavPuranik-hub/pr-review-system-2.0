@@ -213,10 +213,11 @@ jobs:
               ]
           }
 
-          api_key = os.environ['GEMINI_API_KEY']
+          api_key = os.environ['GEMINI_API_KEY'].strip()   # remove hidden whitespace
           url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}'
-          data = json.dumps(body).encode('utf-8')
+          print(f'Calling: {url.split(\"?\")[0]}?key=***', file=sys.stderr)  # log URL without key
 
+          data = json.dumps(body).encode('utf-8')
           req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
 
           try:
