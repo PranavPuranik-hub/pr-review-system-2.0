@@ -194,7 +194,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           python3 -c "
-          import json, os, sys, urllib.request
+          import json, os, sys, time, urllib.request
 
           with open('diff.txt', 'r') as f:
               diff_content = f.read()
@@ -246,22 +246,30 @@ jobs:
           )
 
           try:
-              with urllib.request.urlopen(req) as response:
-                  result = json.loads(response.read().decode('utf-8'))
-                  if 'candidates' in result and result['candidates']:
-                      parts = result['candidates'][0].get('content', {}).get('parts', [])
-                      text = ''.join(p.get('text', '') for p in parts)
-                      if text:
-                          print(text)
-                      else:
-                          print('Model returned no text content.', file=sys.stderr)
-                          sys.exit(1)
-                  elif 'error' in result:
-                      print('API Error:', result['error'].get('message', result['error']), file=sys.stderr)
-                      sys.exit(1)
+              for attempt in range(5):
+                  try:
+                      with urllib.request.urlopen(req) as response:
+                          result = json.loads(response.read().decode('utf-8'))
+                      break
+                  except urllib.error.HTTPError as e:
+                      if e.code == 503 and attempt < 4:
+                          time.sleep(2 ** attempt)
+                          continue
+                      raise
+              if 'candidates' in result and result['candidates']:
+                  parts = result['candidates'][0].get('content', {}).get('parts', [])
+                  text = ''.join(p.get('text', '') for p in parts)
+                  if text:
+                      print(text)
                   else:
-                      print('Unexpected response:', result, file=sys.stderr)
+                      print('Model returned no text content.', file=sys.stderr)
                       sys.exit(1)
+              elif 'error' in result:
+                  print('API Error:', result['error'].get('message', result['error']), file=sys.stderr)
+                  sys.exit(1)
+              else:
+                  print('Unexpected response:', result, file=sys.stderr)
+                  sys.exit(1)
           except urllib.error.HTTPError as e:
               body_text = e.read().decode('utf-8', errors='replace')
               print(f'Request failed: HTTP {e.code} {e.reason}', file=sys.stderr)
