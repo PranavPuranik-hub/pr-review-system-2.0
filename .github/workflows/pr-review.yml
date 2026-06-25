@@ -167,8 +167,10 @@ jobs:
         uses: github/codeql-action/init@v3
         with:
           languages: ${{ needs.detect.outputs.codeql_languages }}
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@v3
+          # Python and JavaScript are interpreted languages analyzed via the
+          # build-mode "none" extractor, not autobuild. Autobuild is only
+          # meaningful for compiled languages (Java, C/C++, C#, Go, Swift).
+          build-mode: none
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@v3
 
@@ -184,6 +186,7 @@ jobs:
       - name: Generate git diff
         run: |
           git diff ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} > diff.txt
+          echo "Diff size: $(wc -l < diff.txt) lines, $(wc -c < diff.txt) bytes"
 
       - name: Generate AI summary using REST API (Python)
         id: ai
@@ -196,11 +199,21 @@ jobs:
           with open('diff.txt', 'r') as f:
               diff_content = f.read()
 
+          # Guard against huge diffs blowing past context/cost limits.
+          # ~4 chars/token is a safe rough estimate; cap comfortably under
+          # gemini-3.5-flash's 1M token context window.
+          MAX_CHARS = 200_000
+          truncated = False
+          if len(diff_content) > MAX_CHARS:
+              diff_content = diff_content[:MAX_CHARS]
+              truncated = True
+
           prompt = (
               'You are a helpful code reviewer. Summarize the following code changes '
               'from a pull request. Explain what changed, why it matters, and highlight '
               'any potential concerns. Keep the summary concise and use markdown.\n\n'
               + diff_content
+              + ('\n\n[NOTE: diff was truncated due to size]' if truncated else '')
           )
 
           body = {
@@ -214,29 +227,53 @@ jobs:
           }
 
           api_key = os.environ['GEMINI_API_KEY'].strip()   # remove hidden whitespace
-          url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}'
-          print(f'Calling: {url.split(\"?\")[0]}?key=***', file=sys.stderr)  # log URL without key
+          if not api_key:
+              print('GEMINI_API_KEY secret is empty or not set', file=sys.stderr)
+              sys.exit(1)
+
+          model = 'gemini-3.5-flash'
+          url = f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'
+          print(f'Calling: {url}', file=sys.stderr)  # key is sent as a header, not logged
 
           data = json.dumps(body).encode('utf-8')
-          req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
+          req = urllib.request.Request(
+              url,
+              data=data,
+              headers={
+                  'Content-Type': 'application/json',
+                  'x-goog-api-key': api_key,
+              },
+          )
 
           try:
               with urllib.request.urlopen(req) as response:
                   result = json.loads(response.read().decode('utf-8'))
-                  if 'candidates' in result:
-                      print(result['candidates'][0]['content']['parts'][0]['text'])
+                  if 'candidates' in result and result['candidates']:
+                      parts = result['candidates'][0].get('content', {}).get('parts', [])
+                      text = ''.join(p.get('text', '') for p in parts)
+                      if text:
+                          print(text)
+                      else:
+                          print('Model returned no text content.', file=sys.stderr)
+                          sys.exit(1)
                   elif 'error' in result:
-                      print('API Error:', result['error']['message'], file=sys.stderr)
+                      print('API Error:', result['error'].get('message', result['error']), file=sys.stderr)
                       sys.exit(1)
                   else:
                       print('Unexpected response:', result, file=sys.stderr)
                       sys.exit(1)
+          except urllib.error.HTTPError as e:
+              body_text = e.read().decode('utf-8', errors='replace')
+              print(f'Request failed: HTTP {e.code} {e.reason}', file=sys.stderr)
+              print(body_text, file=sys.stderr)
+              sys.exit(1)
           except Exception as e:
               print('Request failed:', str(e), file=sys.stderr)
               sys.exit(1)
           " > summary.md
 
       - name: Post summary as PR comment
+        if: success()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
