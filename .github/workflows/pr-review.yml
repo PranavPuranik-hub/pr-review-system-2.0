@@ -185,35 +185,53 @@ jobs:
         run: |
           git diff ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} > diff.txt
 
-      - name: Generate AI summary using REST API
+      - name: Generate AI summary using REST API (Python)
         id: ai
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          # Read the diff and escape it for JSON
-          DIFF=$(python3 -c "import sys,json; print(json.dumps(open('diff.txt','r').read()))")
+          python3 -c "
+          import json, os, sys, urllib.request
 
-          # Call Gemini REST endpoint
-          RESPONSE=$(curl -s "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$GEMINI_API_KEY" \
-            -H "Content-Type: application/json" \
-            -d "{\"contents\":[{\"parts\":[{\"text\": \"You are a helpful code reviewer. Summarize the following code changes from a pull request. Explain what changed, why it matters, and highlight any potential concerns. Keep the summary concise and use markdown.\n\n${DIFF}\"}]}]}")
+          with open('diff.txt', 'r') as f:
+              diff_content = f.read()
 
-          # Print the full raw response so we can see any error
-          echo "--- Full API Response ---"
-          echo "$RESPONSE"
-          echo "--- End of Response ---"
+          prompt = (
+              'You are a helpful code reviewer. Summarize the following code changes '
+              'from a pull request. Explain what changed, why it matters, and highlight '
+              'any potential concerns. Keep the summary concise and use markdown.\n\n'
+              + diff_content
+          )
 
-          # Extract the summary text (if successful)
-          echo "$RESPONSE" | python3 -c "
-          import sys, json
-          data = json.load(sys.stdin)
-          if 'candidates' in data:
-              print(data['candidates'][0]['content']['parts'][0]['text'])
-          elif 'error' in data:
-              print('API Error:', data['error']['message'])
-              sys.exit(1)
-          else:
-              print('Unexpected response:', data)
+          body = {
+              'contents': [
+                  {
+                      'parts': [
+                          {'text': prompt}
+                      ]
+                  }
+              ]
+          }
+
+          api_key = os.environ['GEMINI_API_KEY']
+          url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}'
+          data = json.dumps(body).encode('utf-8')
+
+          req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
+
+          try:
+              with urllib.request.urlopen(req) as response:
+                  result = json.loads(response.read().decode('utf-8'))
+                  if 'candidates' in result:
+                      print(result['candidates'][0]['content']['parts'][0]['text'])
+                  elif 'error' in result:
+                      print('API Error:', result['error']['message'], file=sys.stderr)
+                      sys.exit(1)
+                  else:
+                      print('Unexpected response:', result, file=sys.stderr)
+                      sys.exit(1)
+          except Exception as e:
+              print('Request failed:', str(e), file=sys.stderr)
               sys.exit(1)
           " > summary.md
 
