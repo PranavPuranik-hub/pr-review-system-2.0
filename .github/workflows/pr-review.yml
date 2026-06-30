@@ -1,3 +1,4 @@
+
 name: Automated PR Review
 
 on:
@@ -297,3 +298,27 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh pr comment ${{ github.event.pull_request.number }} --body-file summary.md
+
+      - name: Prepare email body with PR link
+        if: success()
+        run: |
+          {
+            echo "PR: ${{ github.event.pull_request.title }}"
+            echo "Link: ${{ github.event.pull_request.html_url }}"
+            echo ""
+            cat summary.md
+          } > email_body.md
+
+      - name: Send summary via email
+        if: success()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "PR Review Summary: ${{ github.event.pull_request.title }}"
+          to: your-email@example.com
+          from: PR Review Bot <${{ secrets.MAIL_USERNAME }}>
+          html_body: file://email_body.md
+          convert_markdown: true
