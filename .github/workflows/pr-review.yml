@@ -318,7 +318,7 @@ jobs:
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
           subject: "PR Review Summary: ${{ github.event.pull_request.title }}"
-          to:pranavmm.24.beis@acharya.ac.in
+          to: pranavm.24.beis@acharya.ac.in
           from: PR Review Bot <${{ secrets.MAIL_USERNAME }}>
           html_body: file://email_body.md
           convert_markdown: true
